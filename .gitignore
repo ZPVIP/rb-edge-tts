@@ -1,0 +1,53 @@
+# Ruby
+*.gem
+*.rbc
+/.config
+/coverage/
+/InstalledFiles
+/pkg/
+/spec/reports/
+/spec/examples.txt
+/test/tmp/
+/test/version_tmp/
+/tmp/
+
+# Bundler
+/.bundle/
+/vendor/bundle
+/lib/bundler/man/
+
+# YARD
+/.yardoc/
+/_yardoc/
+/doc/
+/rdoc/
+
+# RVM
+/.rvmrc
+
+# rbenv
+.ruby-version
+.ruby-gemset
+
+# Documentation
+/doc/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+*.mp3
+*.srt
+test_output/

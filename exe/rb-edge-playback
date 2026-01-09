@@ -1,0 +1,168 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../lib/rb_edge_tts'
+require_relative '../lib/edge_playback/version'
+require 'optparse'
+require 'tempfile'
+require 'open3'
+
+module EdgePlayback
+  module CLI
+    class << self
+      def run(args)
+        options = parse_options(args)
+        check_dependencies(options[:use_mpv])
+
+        debug = ENV['EDGE_PLAYBACK_DEBUG']
+        keep = ENV['EDGE_PLAYBACK_KEEP_TEMP']
+        mp3_file = ENV['EDGE_PLAYBACK_MP3_FILE']
+        srt_file = ENV['EDGE_PLAYBACK_SRT_FILE']
+
+        begin
+          mp3_file, srt_file = create_temp_files(options[:use_mpv], mp3_file, srt_file, debug)
+          run_edge_tts(mp3_file, srt_file, args)
+          play_media(options[:use_mpv], mp3_file, srt_file)
+        ensure
+          cleanup(mp3_file, srt_file, keep)
+        end
+      end
+
+      private
+
+      def parse_options(args)
+        options = { use_mpv: !Gem.win_platform? }
+        remaining_args = []
+
+        while (arg = args.shift)
+          case arg
+          when '--mpv'
+            options[:use_mpv] = true
+          when '--version'
+            puts "rb-edge-playback #{EdgePlayback::VERSION}"
+            exit 0
+          when '-h', '--help'
+            puts "Usage: rb-edge-playback [options] [rb-edge-tts options]"
+            puts ""
+            puts "Options:"
+            puts "    --mpv                            Use mpv to play audio"
+            puts "    --version                        Show version"
+            puts "    -h, --help                       Show this help message"
+            puts ""
+            puts "See 'rb-edge-tts --help' for additional arguments"
+            exit 0
+          else
+            remaining_args << arg
+          end
+        end
+
+        # Restore request arguments
+        remaining_args.each { |a| args << a }
+
+        options
+      end
+
+      def check_dependencies(use_mpv)
+        missing = []
+
+        missing << 'rb-edge-tts' unless system('which rb-edge-tts > /dev/null 2>&1')
+        missing << 'mpv' if use_mpv && !system('which mpv > /dev/null 2>&1')
+
+        return if missing.empty?
+
+        missing.each { |dep| warn "#{dep} is not installed." }
+        warn 'Please install the missing dependencies.'
+        exit 1
+      end
+
+      def create_temp_files(use_mpv, mp3_fname, srt_fname, debug)
+        unless mp3_fname
+          media = Tempfile.new(['rb-edge-playback-', '.mp3'])
+          media.close
+          mp3_fname = media.path
+          puts "Media file: #{mp3_fname}" if debug
+        end
+
+        unless srt_fname || !use_mpv
+          subtitle = Tempfile.new(['rb-edge-playback-', '.srt'])
+          subtitle.close
+          srt_fname = subtitle.path
+          puts "Subtitle file: #{srt_fname}" if debug
+        end
+
+        [mp3_fname, srt_fname]
+      end
+
+      def run_edge_tts(mp3_fname, srt_fname, tts_args)
+        edge_tts_cmd = ['rb-edge-tts', "--write-media=#{mp3_fname}"]
+        edge_tts_cmd << "--write-subtitles=#{srt_fname}" if srt_fname
+        edge_tts_cmd.concat(tts_args)
+
+        status = system(*edge_tts_cmd)
+        raise "rb-edge-tts failed with status #{$?.exitstatus}" unless status
+      end
+
+      def play_media(use_mpv, mp3_fname, srt_fname)
+        if Gem.win_platform? && !use_mpv
+          play_mp3_win32(mp3_fname)
+          return
+        end
+
+        mpv_cmd = %w[mpv --msg-level=all=error,statusline=status]
+        mpv_cmd << "--sub-file=#{srt_fname}" if srt_fname
+        mpv_cmd << mp3_fname
+
+        status = system(*mpv_cmd)
+        warn "mpv failed with status #{$?.exitstatus}" unless status
+      end
+
+      def play_mp3_win32(mp3_fname)
+        require 'fiddle'
+
+        kernel32 = Fiddle::Handle.new('kernel32')
+        winmm = Fiddle::Handle.new('winmm')
+
+        get_short_path_name_w = Fiddle::Function.new(
+          kernel32['GetShortPathNameW'],
+          [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_DWORD],
+          Fiddle::TYPE_DWORD
+        )
+
+        get_long_path_name_w = Fiddle::Function.new(
+          kernel32['GetLongPathNameW'],
+          [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_DWORD],
+          Fiddle::TYPE_DWORD
+        )
+
+        mci_send_string_w = Fiddle::Function.new(
+          winmm['mciSendStringW'],
+          [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_DWORD, Fiddle::TYPE_VOIDP],
+          Fiddle::TYPE_DWORD
+        )
+
+        mp3_path = mp3_fname.encode('utf-16le')
+        buffer = "\0" * 260 * 2
+
+        get_short_path_name_w.call(mp3_path, buffer, 260)
+        short_name = buffer.strip.encode('utf-8')
+
+        mci_send_string_w.call('Close All', nil, 0, nil)
+        mci_send_string_w.call("Open \"#{short_name}\" Type MPEGVideo Alias theMP3", nil, 0, nil)
+        mci_send_string_w.call('Play theMP3 Wait', nil, 0, nil)
+        mci_send_string_w.call('Close theMP3', nil, 0, nil)
+      rescue LoadError => e
+        warn "Error loading Windows libraries: #{e.message}"
+        exit 1
+      end
+
+      def cleanup(mp3_fname, srt_fname, keep)
+        return if keep
+
+        File.delete(mp3_fname) if mp3_fname && File.exist?(mp3_fname)
+        File.delete(srt_fname) if srt_fname && File.exist?(srt_fname)
+      end
+    end
+  end
+end
+
+EdgePlayback::CLI.run(ARGV)

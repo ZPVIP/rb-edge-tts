@@ -1,0 +1,192 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../lib/rb_edge_tts'
+require 'optparse'
+require 'fileutils'
+
+module RbEdgeTTS
+  module CLI
+    class << self
+      def run(args)
+        options = parse_options(args)
+
+        if options[:list_voices]
+          print_voices(options)
+          exit 0
+        end
+
+        text = get_text(options)
+        run_tts(text, options)
+      end
+
+      private
+
+      def parse_options(args)
+        options = {
+          voice: RbEdgeTTS::DEFAULT_VOICE,
+          rate: '+0%',
+          volume: '+0%',
+          pitch: '+0Hz'
+        }
+
+        OptionParser.new do |opts|
+          opts.banner = "Usage: rb-edge-tts [options]"
+          opts.separator ""
+          opts.separator "Options:"
+
+          opts.on('-t', '--text TEXT', 'What TTS will say') do |t|
+            options[:text] = t
+          end
+
+          opts.on('-f', '--file FILE', 'Read text from file') do |f|
+            options[:file] = f
+          end
+
+          opts.on('-v', '--voice VOICE', "Voice for TTS (default: #{DEFAULT_VOICE})") do |v|
+            options[:voice] = v
+          end
+
+          opts.on('-l', '--list-voices', 'List available voices and exit') do
+            options[:list_voices] = true
+          end
+
+          opts.on('--rate RATE', 'Set TTS rate (e.g., +20%, -50%)') do |r|
+            options[:rate] = r
+          end
+
+          opts.on('--volume VOLUME', 'Set TTS volume (e.g., +10%, -20%)') do |v|
+            options[:volume] = v
+          end
+
+          opts.on('--pitch PITCH', 'Set TTS pitch (e.g., +5Hz, -10Hz)') do |p|
+            options[:pitch] = p
+          end
+
+          opts.on('--write-media FILE', 'Write media output to file instead of stdout') do |w|
+            options[:write_media] = w
+          end
+
+          opts.on('--write-subtitles FILE', 'Write subtitle output to file instead of stderr') do |w|
+            options[:write_subtitles] = w
+          end
+
+          opts.on('--proxy URL', 'Use a proxy for TTS and voice list') do |p|
+            options[:proxy] = p
+          end
+
+          opts.on('--verbose', 'Show debug information') do
+            options[:verbose] = true
+          end
+
+          opts.on('--version', 'Show version') do
+            puts "rb-edge-tts #{VERSION}"
+            exit 0
+          end
+
+          opts.on('-h', '--help', 'Show this help message') do
+            puts opts
+            exit 0
+          end
+        end.parse!(args)
+
+        raise OptionParser::MissingArgument, 'Must specify --text or --file' unless options[:text] || options[:file] || options[:list_voices]
+
+        options
+      rescue OptionParser::ParseError => e
+        warn "Error: #{e.message}"
+        warn "Use --help for usage information"
+        exit 1
+      end
+
+      def get_text(options)
+        if options[:file]
+          if options[:file] == '-' || options[:file] == '/dev/stdin'
+            STDIN.read
+          else
+            File.read(options[:file], encoding: 'utf-8')
+          end
+        else
+          options[:text]
+        end
+      end
+
+      def print_voices(options)
+        voices = RbEdgeTTS.list_voices(proxy: options[:proxy])
+        voices = voices.sort_by(&:short_name)
+
+        require 'terminal-table'
+        table = Terminal::Table.new(
+          headings: %w[Name Gender ContentCategories VoicePersonalities],
+          rows: voices.map do |v|
+            [
+              v.short_name,
+              v.gender,
+              v.voice_tag.content_categories.join(', '),
+              v.voice_tag.voice_personalities.join(', ')
+            ]
+          end
+        )
+
+        puts table
+      end
+
+      def run_tts(text, options)
+        if STDIN.tty? && STDOUT.tty? && !options[:write_media]
+          warn 'Warning: TTS output will be written to the terminal.'
+          warn 'Use --write-media to write to a file.'
+          warn 'Press Ctrl+C to cancel the operation.'
+          warn 'Press Enter to continue.'
+          STDIN.gets
+        end
+
+        communicate = RbEdgeTTS::Communicate.new(
+          text,
+          options[:voice],
+          rate: options[:rate],
+          volume: options[:volume],
+          pitch: options[:pitch],
+          proxy: options[:proxy],
+          verbose: options[:verbose]
+        )
+
+        submaker = RbEdgeTTS::SubMaker.new
+
+        audio_file = if options[:write_media] && options[:write_media] != '-'
+                       File.open(options[:write_media], 'wb')
+                     else
+                       STDOUT.binmode
+                       STDOUT
+                     end
+
+        sub_file = if options[:write_subtitles] && options[:write_subtitles] != '-'
+                     File.open(options[:write_subtitles], 'w', encoding: 'utf-8')
+                   elsif options[:write_subtitles] == '-'
+                     STDERR
+                   else
+                     nil
+                   end
+
+        begin
+          communicate.stream do |chunk|
+            if chunk.type == 'audio'
+              audio_file.write(chunk.data)
+            elsif %w[WordBoundary SentenceBoundary].include?(chunk.type) && sub_file
+              submaker.feed(chunk)
+            end
+          end
+
+          sub_file.puts(submaker.get_srt) if sub_file
+        ensure
+          audio_file.close if audio_file != STDOUT
+          sub_file.close if sub_file && sub_file != STDERR
+        end
+      rescue Interrupt
+        warn "\nOperation canceled."
+        exit 1
+      end
+    end
+  end
+end
+
+RbEdgeTTS::CLI.run(ARGV)
