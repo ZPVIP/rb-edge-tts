@@ -19,6 +19,13 @@ module RbEdgeTTS
   class Communicate
     attr_accessor :texts, :proxy, :state, :tts_config
 
+    # tls: hash merged into the Faye::WebSocket TLS options.
+    # Default enables peer verification with the system CA bundle.
+    # EventMachine 1.2.x ignores ca_file on some platforms (notably OpenBSD /
+    # FreeBSD), causing "Unable to verify server certificate" even when the
+    # bundle is valid. Pass `tls: { verify_peer: false }` to work around it:
+    #
+    #   RbEdgeTTS::Communicate.new(text, voice, tls: { verify_peer: false })
     def initialize(text,
                    voice = RbEdgeTTS::DEFAULT_VOICE,
                    rate: '+0%',
@@ -28,7 +35,8 @@ module RbEdgeTTS
                    proxy: nil,
                    connect_timeout: 10,
                    receive_timeout: 60,
-                   verbose: false)
+                   verbose: false,
+                   tls: {})
       raise TypeError, 'text must be a string' unless text.is_a?(String)
 
       @tts_config = TTSConfig.new(voice, rate, volume, pitch, boundary)
@@ -44,6 +52,10 @@ module RbEdgeTTS
       @connect_timeout = connect_timeout
       @receive_timeout = receive_timeout
       @verbose = verbose
+      @tls_options = {
+        verify_peer: true,
+        ca_file: OpenSSL::X509::DEFAULT_CERT_FILE
+      }.merge(tls)
 
       @state = CommunicateState.new(
         partial_text: '',
@@ -126,10 +138,7 @@ module RbEdgeTTS
 
           options = {
             headers: DRM.headers_with_muid(RbEdgeTTS::WSS_HEADERS),
-            tls: {
-              verify_peer: true,
-              ca_file: OpenSSL::X509::DEFAULT_CERT_FILE
-            }
+            tls: @tls_options
           }
 
           @ws = Faye::WebSocket::Client.new(url, [], options)
@@ -148,7 +157,6 @@ module RbEdgeTTS
               yield result
             end
           end
-
 
           @ws.on :close do |event|
             # 1006 is common after successful transmission
@@ -211,8 +219,8 @@ module RbEdgeTTS
       header_end = data.index("\r\n\r\n")
       unless header_end
         if data.length > 2
-           handle_binary_message(data.bytes, &block)
-           return
+          handle_binary_message(data.bytes, &block)
+          return
         end
       end
       return unless header_end
@@ -223,8 +231,8 @@ module RbEdgeTTS
       path = extract_header_value(headers, 'Path')
       if path.nil?
         if headers.include?('Path:audio')
-           handle_binary_message(data.bytes, &block)
-           return
+          handle_binary_message(data.bytes, &block)
+          return
         end
       end
       return unless path
@@ -333,4 +341,3 @@ module RbEdgeTTS
     end
   end
 end
-
