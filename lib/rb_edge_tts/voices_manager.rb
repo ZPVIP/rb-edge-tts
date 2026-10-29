@@ -94,7 +94,8 @@ module RbEdgeTTS
         content_categories: voice_data.dig(:voice_tag, :content_categories) || [],
         voice_personalities: voice_data.dig(:voice_tag, :voice_personalities) || []
       )
-      Voice.new(**voice_data)
+      # The service adds fields over time (e.g. LocaleName); ignore ones Voice doesn't model.
+      Voice.new(**voice_data.slice(*Voice.members))
     end
   end
 end

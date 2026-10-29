@@ -4,11 +4,23 @@ require 'spec_helper'
 
 RSpec.describe RbEdgeTTS::DRM do
   describe '.generate_sec_ms_gec' do
-    it 'generates a Sec-MS-GEC token' do
+    it 'generates a v2 Sec-MS-GEC token (<16 hex>-<64 hex>)' do
       token = RbEdgeTTS::DRM.generate_sec_ms_gec
-      expect(token).to be_a(String)
-      expect(token.length).to eq(64)
-      expect(token).to match(/^[A-F0-9]+$/)
+      expect(token).to match(/\A[A-F0-9]{16}-[A-F0-9]{64}\z/)
+    end
+
+    it 'is stable within a 5-minute window and changes across windows' do
+      base = 1_761_600_000
+      window = RbEdgeTTS::DRM.generate_sec_ms_gec(base)
+      expect(RbEdgeTTS::DRM.generate_sec_ms_gec(base + 299)).to eq(window)
+      expect(RbEdgeTTS::DRM.generate_sec_ms_gec(base + 300)).not_to eq(window)
+    end
+
+    # Regression pin for the hand-ported digest. The same code's token for the
+    # then-current window was accepted by the live service (2026-10-28: voice
+    # list 200, synthesis streamed audio).
+    it 'produces the known token for a fixed timestamp' do
+      expect(RbEdgeTTS::DRM.generate_sec_ms_gec(1_761_600_000)).to eq('2E35E683F6E3EEF9-ACC6E18CDE9E31DD20FA1F06D71A048C2E12A47C007A19FA4FD78E3F1550DD0F')
     end
   end
 

@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-require 'digest'
 require 'securerandom'
 require 'time'
+
+require_relative 'sec_ms_gec_v2'
 
 module RbEdgeTTS
   class DRM
@@ -41,14 +42,13 @@ module RbEdgeTTS
         adj_clock_skew_seconds(server_date_parsed - client_date)
       end
 
-      def generate_sec_ms_gec
-        ticks = get_unix_timestamp
+      def generate_sec_ms_gec(unix_timestamp = nil)
+        ticks = unix_timestamp || get_unix_timestamp
         ticks += WIN_EPOCH
         ticks -= (ticks % 300)
         ticks = (ticks * S_TO_NS / 100).round
 
-        str_to_hash = "#{ticks.to_i}#{TRUSTED_CLIENT_TOKEN}"
-        Digest::SHA256.hexdigest(str_to_hash).upcase
+        SecMsGecV2.token(ticks.to_i, TRUSTED_CLIENT_TOKEN)
       end
 
       def command_request(boundary)
